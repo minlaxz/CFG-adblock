@@ -2,7 +2,8 @@ import asyncio
 import aiohttp
 import logging
 
-from src import cloudflare, convert 
+from src import cloudflare, convert
+
 
 class App:
     def __init__(
@@ -16,32 +17,44 @@ class App:
     async def run(self):
         async with aiohttp.ClientSession() as session:
             all_urls = self.adlist_urls + self.whitelist_urls
-            download_tasks = [
-                self.download_file(session, url) for url in all_urls
-            ]
+            download_tasks = [self.download_file(session, url) for url in all_urls]
             results = await asyncio.gather(*download_tasks)
-            block_content = "".join(results[:len(self.adlist_urls)])
-            white_content = "".join(results[len(self.adlist_urls):])
-                        
-        domains = convert.convert_to_domain_list(block_content, white_content)
-        
+            block_content = "".join(results[: len(self.adlist_urls)])
+            white_content = "".join(results[len(self.adlist_urls) :])
+
+        domains_to_block = convert.convert_to_domain_list(block_content, white_content)
+
         # check if number of domains exceeds the limit
-        if len(domains) == 0:
+        if len(domains_to_block) == 0:
             logging.warning("No domains found in the adlist file. Exiting script.")
-            return 
-        
+            return
+
         # stop script if the number of final domains exceeds the limit
-        if len(domains) > 300000:
-            logging.warning("The number of final domains exceeds the limit. Exiting script.")
+        if len(domains_to_block) > 300000:
+            logging.warning(
+                "The number of final domains exceeds the limit. Exiting script."
+            )
             return
 
         # check if the list is already in Cloudflare
         cf_lists = await cloudflare.get_lists(self.name_prefix)
+        cf_items = []
+        seat_left_cf_list = None
+        for i in cf_lists:
+            total_items = i["count"]
+            items_per_page = 50
+            number_of_pages = (total_items + items_per_page - 1) // items_per_page
+            cf_items.append(await cloudflare.get_items(uuid=i["id"], pages=number_of_pages))
+            seat_left_cf_list = None if total_items == 1000 else i["id"]
 
         logging.info(f"Number of lists in Cloudflare: {len(cf_lists)}")
+        logging.info(f"Number of items in Cloudflare: {len(cf_items)}")
+        
+        domain_missing_on_cf = list(set(cf_items) - set(domains_to_block))
+        # domains_to_remove_from_cf = list(set(domains_to_block) - set(created_items))
 
         # compare the lists size
-        if len(domains) == sum([l["count"] for l in cf_lists]):
+        if len(domain_missing_on_cf) == 0:
             logging.warning("Lists are the same size, checking policy")
             cf_policies = await cloudflare.get_firewall_policies(self.name_prefix)
 
@@ -54,6 +67,7 @@ class App:
                 logging.warning("Firewall policy already exists, exiting script")
                 return
 
+            logging.warning("Same lists, same policy, exiting script")
             return
 
         # Delete existing policy created by script
@@ -61,7 +75,7 @@ class App:
         deleted_policies = await cloudflare.delete_gateway_policy(policy_prefix)
         logging.info(f"Deleted {deleted_policies} gateway policies")
 
-        # Delete old lists on Cloudflare 
+        # Delete old lists on Cloudflare
         delete_list_tasks = []
         for l in cf_lists:
             logging.info(f"Deleting list {l['name']} - ID:{l['id']} ")
@@ -70,11 +84,11 @@ class App:
 
         # Start creating new lists and firewall policy concurrently
         create_list_tasks = []
-        for i, chunk in enumerate(self.chunk_list(domains, 1000)):
+        for i, chunk in enumerate(self.chunk_list(domains_to_block, 1000)):
             list_name = f"{self.name_prefix} {i + 1}"
             logging.info(f"Creating list {list_name}")
             create_list_tasks.append(cloudflare.create_list(list_name, chunk))
-    
+
         cf_lists = await asyncio.gather(*create_list_tasks)
 
         cf_policies = await cloudflare.get_firewall_policies(self.name_prefix)

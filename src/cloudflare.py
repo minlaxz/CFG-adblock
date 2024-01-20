@@ -1,9 +1,10 @@
 import functools
 import aiohttp
 import logging
-
+import uuid
 
 from src import CF_API_TOKEN, CF_IDENTIFIER
+
 
 def aiohttp_session(func):
     @functools.wraps(func)
@@ -23,11 +24,29 @@ async def get_lists(name_prefix: str, session: aiohttp.ClientSession):
     async with session.get(
         f"https://api.cloudflare.com/client/v4/accounts/{CF_IDENTIFIER}/gateway/lists",
     ) as resp:
-        if resp.status != 200:
+        resp_json = await resp.json()
+        if not resp_json["success"]:
+            logging.error(resp_json)
             raise Exception("Failed to get Cloudflare lists")
 
-        lists = (await resp.json())["result"] or []
+        lists = resp_json["result"] or []
         return [l for l in lists if l["name"].startswith(name_prefix)]
+
+
+@aiohttp_session
+async def get_items(uuid: uuid, pages: int, session: aiohttp.ClientSession):
+    item_values = []
+    for i in range(1, pages + 1):  # for exclusive
+        async with session.get(
+            f"https://api.cloudflare.com/client/v4/accounts/{CF_IDENTIFIER}/gateway/lists/{uuid}/items?page={i}",
+        ) as resp:
+            resp_json = await resp.json()
+            if resp.status != 200:
+                logging.error(resp_json)
+                raise Exception("Failed to get Cloudflare list items")
+            items = [j["vaule"] for j in resp_json["result"]]
+            item_values.append(items)
+    return item_values
 
 
 @aiohttp_session
@@ -38,6 +57,20 @@ async def create_list(name: str, domains: list[str], session: aiohttp.ClientSess
             "name": name,
             "description": "Created by script.",
             "type": "DOMAIN",
+            "items": [{"value": d} for d in domains],
+        },
+    ) as resp:
+        if resp.status != 200:
+            raise Exception("Failed to create Cloudflare list")
+
+        return (await resp.json())["result"]
+
+
+@aiohttp_session
+async def patch_list(uuid: uuid, domains: list[str], session: aiohttp.ClientSession):
+    async with session.patch(
+        f"https://api.cloudflare.com/client/v4/accounts/{CF_IDENTIFIER}/gateway/lists/{uuid}",
+        json={
             "items": [{"value": d} for d in domains],
         },
     ) as resp:

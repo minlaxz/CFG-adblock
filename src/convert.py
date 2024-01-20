@@ -6,10 +6,11 @@ def convert_to_domain_list(block_content: str, white_content: str) -> list[str]:
     block_domains = set()
 
     extract_domains(white_content, white_domains)
+    white_domains = remove_subdomains(white_domains)
     logging.info(f"Number of whitelisted domains: {len(white_domains)}")
 
     extract_domains(block_content, block_domains)
-    block_domains = remove_subdomains_if_higher(block_domains)
+    block_domains = remove_subdomains(block_domains)
     logging.info(f"Number of blocked domains: {len(block_domains)}")
 
     final_domains = list(block_domains - white_domains)
@@ -31,7 +32,7 @@ def extract_domains(content: str, domains: set[str]) -> None:
         except Exception:
             pass
             
-def remove_subdomains_if_higher(domains: set[str]) -> set[str]:
+def remove_subdomains(domains: set[str]) -> set[str]:
     top_level_domains = set()
     
     for domain in domains:
