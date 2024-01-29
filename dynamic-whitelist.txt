@@ -1,1 +1,2 @@
 sentry.io
+logrocket.com
